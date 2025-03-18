@@ -1,5 +1,5 @@
 ## Introduce
-A Uniswap dapp with incomplete functions. I have my own understanding of almost every code.
+A Uniswap dapp with incomplete functions. I have my own understanding of almost every code. but chinese...
 
 ## Foundry
 
