@@ -1,3 +1,6 @@
+## Introduce
+A Uniswap dapp with incomplete functions. I have my own understanding of almost every code. but chinese...
+
 ## Foundry
 
 **Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
