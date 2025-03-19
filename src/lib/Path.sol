@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.14;
 
-import "../../solidity-bytes-utils/contracts/BytesLib.sol";
+import "../../lib/solidity-bytes-utils/contracts/BytesLib.sol";
 
 //用来将字节数组的某一部分转换成 uint24 类型，对于bytesLib的补充
 library BytesLibExt {
