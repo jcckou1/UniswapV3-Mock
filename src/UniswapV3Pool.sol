@@ -6,7 +6,8 @@ import "./lib/Position.sol";
 import "./lib/TickBitmap.sol";
 import "./lib/TickMath.sol";
 import "./lib/Math.sol";
-import "./interfaces/IERC20.sol";
+import "./lib/SwapMath.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./interfaces/IUniswapV3SwapCallback.sol";
 import "./interfaces/IUniswapV3MintCallback.sol";
 import "./interfaces/IUniswapV3FlashCallback.sol";
@@ -17,6 +18,8 @@ contract UniswapV3Pool {
     error ZeroLiquidity();
     error InsufficientInputAmount();
     error InvalidPriceLimit();
+    error AlreadyInitialized();
+    error NotEnoughLiquidity();
 
     event Mint(
         address sender,
@@ -41,11 +44,11 @@ contract UniswapV3Pool {
     event Flash(address indexed recipient, uint256 amount0, uint256 amount1);
 
     //把库挂载到类型上，使这个类型的所有变量都能直接访问库
-
     using Tick for mapping(int24 => Tick.Info);
     using Position for mapping(bytes32 => Position.Info);
     using Position for Position.Info;
-    using TickBitmap for mapping(int24 => uint256);
+    using TickBitmap for mapping(int16 => uint256);
+    using SwapMath for uint160;
 
     //uniswapV3定义最大最小Tick
     int24 internal constant MIN_TICK = -887272;
@@ -54,6 +57,8 @@ contract UniswapV3Pool {
     // 池子代币，不可变
     address public immutable token0;
     address public immutable token1;
+    address public immutable factory;
+    int24 public immutable tickSpacing;
 
     Slot0 public slot0;
 
@@ -88,6 +93,7 @@ contract UniswapV3Pool {
         uint256 amountCalculated; //合约计算的输出数量（累积已交换的数量）
         uint160 sqrtPriceX96; //交换完成后的价格
         int24 tick; //交换完成后的tick
+        uint128 liquidity; //当前流动性
     }
 
     //StepState维护当前交换步骤的状态，这个结构跟踪"填充订单"的一次迭代的状态
@@ -97,11 +103,16 @@ contract UniswapV3Pool {
         uint160 sqrtPriceNextX96; //下一个tick的价格
         uint256 amountIn; //当前迭代的流动性可以提供的数量
         uint256 amountOut; //当前迭代的流动性可以提供的数量
+        bool initialized; //下一个tick是否已初始化
     }
 
     constructor() {
         //接受factory合约中的参数
-        (factory, token0, token1, tickSpacing) = IUniswapV3PoolDeployer(msg.sender).parameters();
+        (address factory_, address token0_, address token1_, uint24 tickSpacing_) = IUniswapV3PoolDeployer(msg.sender).parameters();
+        factory = factory_;
+        token0 = token0_;
+        token1 = token1_;
+        tickSpacing = int24(tickSpacing_);
     }
 
     //初始化池子的价格和对应的tick
@@ -122,20 +133,16 @@ contract UniswapV3Pool {
         if (lowerTick >= upperTick || lowerTick < MIN_TICK || upperTick > MAX_TICK) revert InvalidTickRange();
         if (amount == 0) revert ZeroLiquidity();
 
-        //位图索引
-        bool flippedLower = ticks.update(lowerTick, amount);
-        bool flippedUpper = ticks.update(upperTick, amount);
-        //lower和upper代表左右区间，说明是哪一边的tick发生了翻转
+        //更新tick
+        bool flippedLower = ticks.update(lowerTick, int128(amount), false);
+        bool flippedUpper = ticks.update(upperTick, int128(amount), true);
+
         if (flippedLower) {
-            tickBitmap.flipTick(lowerTick, 1);
+            tickBitmap.flipTick(lowerTick, tickSpacing);
         }
-
         if (flippedUpper) {
-            tickBitmap.flipTick(upperTick, 1);
+            tickBitmap.flipTick(upperTick, tickSpacing);
         }
-
-        ticks.update(lowerTick, amount);
-        ticks.update(upperTick, amount);
 
         Position.Info storage position = positions.get(owner, lowerTick, upperTick);
         position.update(amount);
@@ -191,8 +198,7 @@ contract UniswapV3Pool {
         address recipient,
         bool zeroForOne, //用户想要交换代币的方向，true为token0->token1，false为token1->token0
         uint256 amountSpecified, //出售代币数
-        uint160,
-        sqrtPriceLimitX96, //滑点保护数
+        uint160        sqrtPriceLimitX96, //滑点保护数
         bytes calldata data
     ) public returns (int256 amount0, int256 amount1) {
         Slot0 memory slot0_ = slot0;
@@ -208,7 +214,8 @@ contract UniswapV3Pool {
             amountSpecifiedRemaining: amountSpecified,
             amountCalculated: 0,
             sqrtPriceX96: slot0_.sqrtPriceX96,
-            tick: slot0_.tick
+            tick: slot0_.tick,
+            liquidity: liquidity
         });
 
         while (state.amountSpecifiedRemaining > 0 && state.sqrtPriceX96 != sqrtPriceLimitX96) {
@@ -300,13 +307,13 @@ contract UniswapV3Pool {
         //将资金传给接受者
         IERC20(token0).transfer(recipient, uint256(-amount0));
         //让调用者转账，否则回调
-        uint256 balance1Before = balance1();
+        uint256 balance1After = balance1();
         //msg.sender一般是Manager合约，调用该合约中的函数进行回调
         IUniswapV3SwapCallback(msg.sender).uniswapV3SwapCallback(amount0, amount1, data);
         //似乎有隐藏bug，这里的amount1可能是负数
-        if (amount1 > 0 && balance1Before + uint256(amount1) < balance1()) {
+        if (amount1 > 0 && balance1After + uint256(amount1) < balance1()) {
             revert InsufficientInputAmount();
-        } else if (amount1 < 0 && balance1Before - uint256(-amount1) > balance1()) {
+        } else if (amount1 < 0 && balance1After - uint256(-amount1) > balance1()) {
             revert InsufficientInputAmount();
         }
         emit Swap(msg.sender, recipient, amount0, amount1, slot0.sqrtPriceX96, liquidity, slot0.tick);

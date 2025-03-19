@@ -2,6 +2,7 @@
 pragma solidity ^0.8.14;
 
 import "./Math.sol";
+import "./LiquidityMath.sol";
 
 library Tick {
     /**
@@ -22,7 +23,8 @@ library Tick {
         //将tick映射到对应的流动性信息，我们需要在不同价格点更新流动性
         mapping(int24 => Tick.Info) storage self,
         int24 tick,
-        uint128 liquidityDelta
+        int128 liquidityDelta,
+        bool upper
     ) internal returns (bool flipped) {
         Tick.Info storage tickInfo = self[tick];
 

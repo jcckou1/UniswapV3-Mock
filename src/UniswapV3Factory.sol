@@ -11,40 +11,56 @@ import "./UniswapV3Pool.sol";
  * 这是一个临时状态变量，只在调用createPool()期间有值。
  */
 
-contract UniswapV3Factrory is IUniswapV3PoolDeployer {
+contract UniswapV3Factory is IUniswapV3PoolDeployer {
     error PoolAlreadyExists();
-    error ZeroAddressNotAllowed();
-    error TokensMustBeDifferent();
-    error UnsupportedTickSpacing();
+    error ZeroAddress();
+    error SameToken();
+    error InvalidTickSpacing();
 
-    PoolParameters public parameters;
-    mapping(address tokenA => mapping(address tokenB => mapping(uint24 tickSpacing => address pool))) public pools;
-    mapping(uint24 => bool) public tickSpacings;
+    event PoolCreated(address indexed token0, address indexed token1, int24 indexed tickSpacing, address pool);
 
-    constructor() {
-        tickSpacings[10] = true;
-        tickSpacings[60] = true;
+    mapping(address => mapping(address => mapping(int24 => address))) public pools;
+    mapping(address => bool) public isPool;
+
+    function parameters() external view returns (address factory, address token0, address token1, uint24 tickSpacing) {
+        factory = address(this);
+        token0 = _parameters.token0;
+        token1 = _parameters.token1;
+        tickSpacing = uint24(_parameters.tickSpacing);
     }
 
-    function createPool(address tokenX, address tokenY, uint24 tickSpacing) public returns (address pool) {
-        if (tokenX == tokenY) revert TokensMustBeDifferent();
-        if (!tickSpacings[tickSpacing]) revert UnsupportedTickSpacing();
-        //对token排序，执行这一点是为了使salt（和池子地址）的计算保持一致,X<Y
-        (tokenX, tokenY) = tokenX < tokenY ? (tokenX, tokenY) : (tokenY, tokenX);
+    PoolParameters private _parameters;
 
-        if (tokenX == address(0)) revert ZeroAddressNotAllowed();
+    function createPool(address tokenX, address tokenY, int24 tickSpacing) public returns (address pool) {
+        if (tokenX == tokenY) {
+            revert SameToken();
+        }
+
+        if (tokenX == address(0) || tokenY == address(0)) {
+            revert ZeroAddress();
+        }
+
         if (pools[tokenX][tokenY][tickSpacing] != address(0)) {
             revert PoolAlreadyExists();
         }
-        //池子参数
-        parameters = PoolParameters({factory: address(this), token0: tokenX, token1: tokenY, tickSpacing: tickSpacing});
-        //创建新合约实例，其中已经用完了parameters中的值，在pool的constructor中
-        pool = address(new UniswapV3Pool{salt: keccak256(abi.encodePacked(tokenX, tokenY, tickSpacing))}());
-        //清除parameters结构体中的值
-        delete parameters;
-        //添加索引
+
+        // 设置参数
+        _parameters = PoolParameters({
+            factory: address(this),
+            token0: tokenX,
+            token1: tokenY,
+            tickSpacing: tickSpacing
+        });
+
+        // 部署池子
+        pool = address(new UniswapV3Pool());
+
+        // 删除参数
+        delete _parameters;
+
         pools[tokenX][tokenY][tickSpacing] = pool;
         pools[tokenY][tokenX][tickSpacing] = pool;
+        isPool[pool] = true;
 
         emit PoolCreated(tokenX, tokenY, tickSpacing, pool);
     }

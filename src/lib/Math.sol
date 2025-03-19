@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.14;
+pragma solidity ^0.8.20;
 
 import "./FixedPoint96.sol";
-import "../../lib/prb-math/src/math.ts";
+import "@prb/math/PRBMathUD60x18.sol";
 
 library Math {
     /// @notice Calculates amount0 delta between two prices

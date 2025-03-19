@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.14;
 
-import "../../prb-math/src/math.ts";
+import "@prb/math/PRBMathUD60x18.sol";
+import "./FixedPoint96.sol";
 
 library LiquidityMath {
     function getLiquidityForAmount0(uint160 sqrtPriceAX96, uint160 sqrtPriceBX96, uint256 amount0)
@@ -13,8 +14,11 @@ library LiquidityMath {
             (sqrtPriceAX96, sqrtPriceBX96) = (sqrtPriceBX96, sqrtPriceAX96);
         }
         //处理溢出
-        uint256 intermediate = PRBMath.mulDiv(sqrtPriceAX96, sqrtPriceBX96, FixedPoint96.Q96);
-        liquidity = uint128(PRBMath.mulDiv(amount0, intermediate, sqrtPriceBX96 - sqrtPriceAX96));
+        // uint256 intermediate = PRBMathUD60x18.mulDiv(sqrtPriceAX96, sqrtPriceBX96, FixedPoint96.Q96);
+        // liquidity = uint128(PRBMathUD60x18.mulDiv(amount0, intermediate, sqrtPriceBX96 - sqrtPriceAX96));
+        //可能会溢出
+         uint256 intermediate = uint256(sqrtPriceAX96) * uint256(sqrtPriceBX96) / FixedPoint96.Q96;
+        liquidity = uint128(uint256(amount0) * intermediate / (sqrtPriceBX96 - sqrtPriceAX96));
     }
 
     function getLiquidityForAmount1(uint160 sqrtPriceAX96, uint160 sqrtPriceBX96, uint256 amount1)
@@ -25,8 +29,8 @@ library LiquidityMath {
         if (sqrtPriceAX96 > sqrtPriceBX96) {
             (sqrtPriceAX96, sqrtPriceBX96) = (sqrtPriceBX96, sqrtPriceAX96);
         }
-
-        liquidity = uint128(PRBMath.mulDiv(amount1, FixedPoint96.Q96, sqrtPriceBX96 - sqrtPriceAX96));
+//可能会溢出
+        liquidity = uint128(uint256(amount1) * FixedPoint96.Q96 / (sqrtPriceBX96 - sqrtPriceAX96));
     }
 
     // A/B为价格上下限
@@ -51,6 +55,17 @@ library LiquidityMath {
             liquidity = liquidity0 < liquidity1 ? liquidity0 : liquidity1;
         } else {
             liquidity = getLiquidityForAmount1(sqrtPriceAX96, sqrtPriceBX96, amount1);
+        }
+    }
+    function addLiquidity(uint128 x, int128 y)
+        internal
+        pure
+        returns (uint128 z)
+    {
+        if (y < 0) {
+            z = x - uint128(-y);
+        } else {
+            z = x + uint128(y);
         }
     }
 }

@@ -1,20 +1,30 @@
-//SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.14;
 
-import "./UniswapV3Pool.sol";
+import "./interfaces/IUniswapV3Pool.sol";
+import "./interfaces/IUniswapV3PoolDeployer.sol";
+import "./lib/Path.sol";
+import "./lib/PoolAddress.sol";
+import "./lib/TickMath.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * 这个设计有一个重要的限制：由于quote调用Pool合约的swap函数，而swap函数不是纯函数或视图函数（因为它修改合约状态），quote也不能是纯函数或视图函数。
- * swap修改状态，quote也是如此，即使不是在Quoter合约中。
- * 但我们将quote视为一个getter，一个只读取合约数据的函数。
- * 这种不一致意味着当调用quote时，EVM将使用CALL操作码而不是STATICCALL。
- * 这不是一个大问题，因为Quoter在交换回调中回滚，而回滚会重置调用期间修改的状态——这保证了quote不会修改Pool合约的状态（不会发生实际交易）。
- * 这个问题带来的另一个不便是，从客户端库（Ethers.js、Web3.js等）调用quote将触发一个交易。
- * 为了解决这个问题，我们需要强制库进行静态调用。我们将在本里程碑的后面看到如何在Ethers.js中做到这一点。
+ * 这意味着用户不能直接从其他合约中调用quote函数，因为外部合约不能调用非视图函数。
+ * 这就是为什么我们需要一个单独的Quoter合约，它实现了相同的逻辑但作为一个独立的合约。
  */
 //向前端展示展示交换金额
 
-contract UniswapQuoter {
+contract UniswapV3Quoter {
+    using Path for bytes;
+
+    //方便回调函数选择不同代币地址，选择不同池子，以及不同用户
+    struct CallbackData {
+        address token0;
+        address token1;
+        address payer;
+    }
+
     struct QuoteSingleParams {
         address tokenIn; //池地址换为两个代币地址和tick间距
         address tokenOut;
@@ -23,71 +33,52 @@ contract UniswapQuoter {
         uint160 sqrtPriceLimitX96;
     }
 
+    struct QuoteParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        uint256 amountIn;
+        uint160 sqrtPriceLimitX96;
+        int24 tickLimit;
+    }
+
     address public immutable factory;
 
-    constructor(address factory_) {
-        factory = factory_;
+    constructor(address _factory) {
+        factory = _factory;
     }
 
     //模拟一次真实交换，输出金额用于展示
-    function quoteSingle(QuoteSingleParams memory params)
-        public
-        returns (uint256 amountOut, uint160 sqrtPriceX96After, int24 tickAfter)
-    {
-        IUniswapV3Pool pool = getPool(params.tokenIn, params.tokenOut, params.tickSpacing);
-
+    function quoteSingle(QuoteSingleParams memory params) internal returns (uint256 amountOut) {
         bool zeroForOne = params.tokenIn < params.tokenOut;
 
-        try pool.swap(
-            address(this),
-            zeroForOne,
-            params.amountIn,
-            params.sqrtPriceLimitX96 == 0
-                ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
-                : params.sqrtPriceLimitX96,
-            abi.encode(address(pool))
-        ) {} catch (bytes memory reason) {
-            return abi.decode(reason, (uint256, uint160, int24)); //预期回调，返回模拟计算结果
+        try
+            getPool(params.tokenIn, params.tokenOut, params.tickSpacing).swap(
+                address(0),
+                zeroForOne,
+                params.amountIn,
+                params.sqrtPriceLimitX96,
+                abi.encode(CallbackData({token0: params.tokenIn, token1: params.tokenOut, payer: msg.sender}))
+            )
+        returns (int256 amount0, int256 amount1) {
+            amountOut = uint256(-(zeroForOne ? amount1 : amount0));
+        } catch (bytes memory reason) {
+            return abi.decode(reason, (uint256));
         }
     }
 
-    function quote(bytes memory path, uint256 amountIn)
-        public
-        returns (
-            uint256 amountOut,
-            uint160[] memory sqrtPriceX96AfterList, //交换后的值
-            int24[] memory tickAfterList
-        )
-    {
-        sqrtPriceX96AfterList = new uint160[](path.numPools());
-        tickAfterList = new int24[](path.numPools());
+    function quote(bytes memory path, uint256 amountIn) external returns (uint256 amountOut) {
+        (address tokenIn, address tokenOut, uint24 tickSpacing) = path.decodeFirstPool();
 
-        uint256 i = 0;
-        while (true) {
-            (address tokenIn, address tokenOut, uint24 tickSpacing) = path.decodeFirstPool();
-
-            (uint256 amountOut_, uint160 sqrtPriceX96After, int24 tickAfter) = quoteSingle(
-                QuoteSingleParams({
-                    tokenIn: tokenIn,
-                    tokenOut: tokenOut,
-                    tickSpacing: tickSpacing,
-                    amountIn: amountIn,
-                    sqrtPriceLimitX96: 0
-                })
-            );
-
-            sqrtPriceX96AfterList[i] = sqrtPriceX96After;
-            tickAfterList[i] = tickAfter;
-            amountIn = amountOut_;
-            i++;
-            //如果路径中还有更多的池，则重复；否则返回
-            if (path.hasMultiplePools()) {
-                path = path.skipToken();
-            } else {
-                amountOut = amountIn;
-                break;
-            }
-        }
+        amountOut = quoteSingle(
+            QuoteSingleParams({
+                tokenIn: tokenIn,
+                tokenOut: tokenOut,
+                tickSpacing: tickSpacing,
+                amountIn: amountIn,
+                sqrtPriceLimitX96: 0
+            })
+        );
     }
 
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes memory data) external view {
@@ -95,7 +86,7 @@ contract UniswapQuoter {
 
         uint256 amountOut = amount0Delta > 0 ? uint256(-amount1Delta) : uint256(-amount0Delta);
 
-        (uint160 sqrtPriceX96After, int24 tickAfter) = IUniswapV3pool(pool).slot0();
+        (uint160 sqrtPriceX96After, int24 tickAfter) = IUniswapV3Pool(pool).slot0();
 
         assembly {
             let ptr := mload(0x40) //读取下一个可用内存槽的指针（EVM中的内存以32字节为一个槽组织）
@@ -106,8 +97,8 @@ contract UniswapQuoter {
         }
     }
 
-    function getPool(address token0, address token1, uint24 tickSpacing) internal view returns (UniswapV3Pool pool) {
-        (token0, token1) = token0 < token1 ? (token0, token1) : (token1, token0);
-        pool = IUniswapV3Pool(PoolAddress.computeAddress(factory, token0, token1, tickSpacing));
+    function getPool(address tokenA, address tokenB, uint24 tickSpacing) internal view returns (IUniswapV3Pool pool) {
+        (tokenA, tokenB) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        pool = IUniswapV3Pool(PoolAddress.computeAddress(factory, tokenA, tokenB, tickSpacing));
     }
 }

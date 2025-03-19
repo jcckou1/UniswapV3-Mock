@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.14;
 
 import "../../lib/solidity-bytes-utils/contracts/BytesLib.sol";
@@ -18,51 +18,58 @@ library BytesLibExt {
 }
 
 library Path {
-    /**
-     * 计算路径中的池数量；
-     * 确定路径是否有多个池；
-     * 从路径中提取第一个池的参数；
-     * 在路径中进行到下一对；
-     * 解码第一个池的参数。
-     */
-    uint256 private constant ADDR_SIZE = 20;
-    uint256 private constant TICKSPACING_SIZE = 3;
-    uint256 private constant NEXT_OFFSET = ADDR_SIZE + TICKSPACING_SIZE; //是下一个代币地址的偏移量，一个代币地址长度加上tick间距
-    uint256 private constant POP_OFFSET = NEXT_OFFSET + ADDR_SIZE; //是池键的偏移量,因为一个池有两个代币，所以再加一个地址长度
-    uint256 private constant MULTIPLE_POOLS_MIN_LENGTH = POP_OFFSET + NEXT_OFFSET; //是包含2个或更多池的路径的最小长度
-
-    using BytesLibExt for bytes;
     using BytesLib for bytes;
-    //计算路径中的池数量
+    using BytesLibExt for bytes;
 
-    function numPools(bytes memory path) internal pure returns (uint256) {
-        return (path.length - ADDR_SIZE) / NEXT_OFFSET;
-    }
+    /// @dev The length of the bytes encoded address
+    uint256 private constant ADDR_SIZE = 20;
+    /// @dev The length of the bytes encoded fee
+    uint256 private constant FEE_SIZE = 3;
 
-    //检查路径中是否有多个池，是否大于MULTIPLE_POOLS_MIN_LENGTH
+    /// @dev The offset of a single token address and pool fee (20 + 3 bytes)
+    uint256 private constant NEXT_OFFSET = ADDR_SIZE + FEE_SIZE;
+    /// @dev The offset of an encoded pool key
+    uint256 private constant POP_OFFSET = NEXT_OFFSET + ADDR_SIZE;
+    /// @dev The minimum length of an encoding that contains 2 or more pools
+    uint256 private constant MULTIPLE_POOLS_MIN_LENGTH = POP_OFFSET + NEXT_OFFSET;
+
+    /// @notice Returns true iff the path contains two or more pools
+    /// @param path The encoded swap path
+    /// @return True if path contains two or more pools, otherwise false
     function hasMultiplePools(bytes memory path) internal pure returns (bool) {
         return path.length >= MULTIPLE_POOLS_MIN_LENGTH;
     }
 
-    //该函数简单地返回编码为字节的第一个"代币地址 + tick间距 + 代币地址"段
+    /// @notice Returns the number of pools in the path
+    /// @param path The encoded swap path
+    /// @return The number of pools in the path
+    function numPools(bytes memory path) internal pure returns (uint256) {
+        // Ignore the first token address. From then on every fee and token offset indicates a pool.
+        return ((path.length - ADDR_SIZE) / NEXT_OFFSET);
+    }
+
+    /// @notice Decodes the first pool in path
+    /// @param path The bytes encoded swap path
+    /// @return tokenA The first token of the given pool
+    /// @return tokenB The second token of the given pool
+    /// @return fee The fee level of the pool
+    function decodeFirstPool(bytes memory path) internal pure returns (address tokenA, address tokenB, uint24 fee) {
+        tokenA = path.toAddress(0);
+        fee = path.toUint24(ADDR_SIZE);
+        tokenB = path.toAddress(NEXT_OFFSET);
+    }
+
+    /// @notice Gets the segment corresponding to the first pool in the path
+    /// @param path The bytes encoded swap path
+    /// @return The segment containing all data necessary to target the first pool in the path
     function getFirstPool(bytes memory path) internal pure returns (bytes memory) {
         return path.slice(0, POP_OFFSET);
     }
 
-    //当我们遍历路径并丢弃已处理的池时，我们将使用下一个函数，我们移除的是"代币地址 + tick间距"，而不是完整的池参数，
-    //因为我们需要另一个代币地址来计算下一个池地址
+    /// @notice Skips a token + fee element from the buffer and returns the remainder
+    /// @param path The swap path
+    /// @return The remaining token + fee elements in the path
     function skipToken(bytes memory path) internal pure returns (bytes memory) {
         return path.slice(NEXT_OFFSET, path.length - NEXT_OFFSET);
-    }
-
-    //解码路径中第一个池的参数
-    function decodeFirstPool(bytes memory path)
-        internal
-        pure
-        returns (address tokenIn, address tokenOut, uint24 tickSpacing)
-    {
-        tokenIn = path.toAddress(0);
-        tickSpacing = path.toUint24(ADDR_SIZE);
-        tokenOut = path.toAddress(NEXT_OFFSET);
     }
 }
